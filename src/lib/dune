@@ -1,0 +1,3 @@
+(library
+ (name git_md)
+ (libraries hockmd bos astring logs fmt))

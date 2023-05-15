@@ -1,0 +1,4 @@
+(executable
+ (public_name git_md)
+ (name main)
+ (libraries git_md cmdliner fpath logs.cli fmt.cli fmt.tty))
