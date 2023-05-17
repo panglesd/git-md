@@ -18,6 +18,10 @@ let dir_opt =
   let doc = "Directory on which to store files." in
   Arg.(value & opt (some dir) None & info ~docv:"DIR" ~doc [ "directory"; "d" ])
 
+let dir =
+  let doc = "Directory on which to store files." in
+  Arg.(value & pos 0 string "." & info ~docv:"DIR" ~doc [])
+
 let api_opt =
   let doc = "The url of the API." in
   Arg.(value & opt (some string) None & info ~docv:"URL" ~doc [ "api"; "a" ])
@@ -49,11 +53,41 @@ let push_cmd =
   let info = Cmd.info "push" ~version:"%‌%VERSION%%" ~doc ~man in
   Cmd.v info push
 
+let upload_pack =
+  let upload_pack api dir () =
+    let dir = Fpath.v dir in
+    match Lwt_main.run @@ Git_md.upload_pack api dir with
+    | Ok () -> Ok ()
+    | Error (`Msg s) -> Error s
+  in
+  Term.(const upload_pack $ api_opt $ dir $ setup_log)
+
+let upload_pack_cmd =
+  let doc = "Upload-pack hackmd" in
+  let man = [] in
+  let info = Cmd.info "upload-pack" ~version:"%‌%VERSION%%" ~doc ~man in
+  Cmd.v info upload_pack
+
+let receive_pack =
+  let receive_pack api dir () =
+    let dir = Fpath.v dir in
+    match Lwt_main.run @@ Git_md.receive_pack api dir with
+    | Ok () -> Ok ()
+    | Error (`Msg s) -> Error s
+  in
+  Term.(const receive_pack $ api_opt $ dir $ setup_log)
+
+let receive_pack_cmd =
+  let doc = "Upload-pack hackmd" in
+  let man = [] in
+  let info = Cmd.info "receive-pack" ~version:"%‌%VERSION%%" ~doc ~man in
+  Cmd.v info receive_pack
+
 let cmd =
   let doc = "Access hackmd to local files" in
   let man = [] in
   let info = Cmd.info "hockmd" ~version:"%‌%VERSION%%" ~doc ~man in
-  Cmd.group info [ pull_cmd; push_cmd ]
+  Cmd.group info [ pull_cmd; push_cmd; upload_pack_cmd; receive_pack_cmd ]
 
 let main () = exit (Cmd.eval_result cmd)
 let () = main ()
