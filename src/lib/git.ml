@@ -47,6 +47,15 @@ let git_pull dir =
   let= () = Bos.OS.Cmd.run_out cmd |> Bos.OS.Cmd.to_null in
   Bos.OS.Dir.set_current current
 
+let git_fetch dir =
+  let open Result_syntax in
+  let= current = Bos.OS.Dir.current () in
+  let= () = Bos.OS.Dir.set_current Fpath.(v "/" / "home" / "user" // dir) in
+  (* Specify upload-pack *)
+  let cmd = Bos.Cmd.(v "git" % "fetch") in
+  let= () = Bos.OS.Cmd.run_out cmd |> Bos.OS.Cmd.to_null in
+  Bos.OS.Dir.set_current current
+
 let bare_repo = Fpath.v "bare_repo"
 let hm_repo = Fpath.v "hm_repo"
 
@@ -108,6 +117,18 @@ let upload_pack api_url dir =
   (* Answer the original request *)
   git_upload_pack bare_dir
 
+let files_to_update dir =
+  let open Result_syntax in
+  let= current = Bos.OS.Dir.current () in
+  let= () = Bos.OS.Dir.set_current Fpath.(v "/" / "home" / "user" // dir) in
+  (* Specify upload-pack *)
+  let cmd =
+    Bos.Cmd.(v "git" % "diff" % "--name-only" % "master..origin/master")
+  in
+  let= modified_files = Bos.OS.Cmd.run_out cmd |> Bos.OS.Cmd.to_lines in
+  let| () = Bos.OS.Dir.set_current current in
+  List.map Fpath.v modified_files
+
 let receive_pack api_url dir =
   let open Combined_syntax in
   (* Extract token from directory *)
@@ -116,7 +137,16 @@ let receive_pack api_url dir =
   let** bare_dir, hm_dir = git_update token api_url dir in
   (* Answer the original request *)
   let** () = Lwt.return @@ git_receive_pack bare_dir in
+
+  let** () = Lwt.return @@ git_fetch hm_dir in
+
+  let** modified_files = Lwt.return @@ files_to_update hm_dir in
+
   (* Pull from bare to hm *)
   let** () = Lwt.return @@ git_pull hm_dir in
   (* Push changes to hackmd *)
-  Sync.push token hm_dir api_url
+  let** () = Lwt.return @@ git_add_config hm_dir in
+  let** () = Lwt.return @@ git_commit hm_dir "Update from hackmd" in
+  (* Push all this to the bare repo *)
+  let** () = Lwt.return @@ git_push hm_dir in
+  Sync.push_files token hm_dir modified_files api_url

@@ -137,7 +137,7 @@ let push token dir api_url =
                 String.equal note_summary.id id)
               notes
           with
-          | None -> 0
+          | None -> 0 (* has been deleted... *)
           | Some n -> n.lastChangedAt
         in
         let** file_timestamp = Lwt.return @@ last_changed dir path in
@@ -182,5 +182,52 @@ let push token dir api_url =
         let++ () = Lwt.return @@ set_last_changed dir file note.lastChangedAt in
         Config.add (note.id, file) config)
       (Ok config) new_files
+  in
+  Config.set_config dir config
+
+let push_files token dir files api_url =
+  let open Combined_syntax in
+  (* Get config *)
+  let** config = get_config dir in
+  (* Update function *)
+  let update id path =
+    Logs.warn (fun m -> m "Sending note %s" id);
+    match Bos.OS.File.read (Fpath.( // ) dir path) with
+    | Error (`Msg s) ->
+        Logs.debug (fun m -> m "Error when reading %a: %s" Fpath.pp path s);
+        Lwt.return (Ok config)
+    | Ok content ->
+        let+* _p =
+          Hmd.update_note ?api_url token id
+            (Some { content; readPermission = Owner })
+        in
+        Ok config
+  in
+  let create config file =
+    Logs.warn (fun m -> m "Creating new note from %a" Fpath.pp file);
+    let** content = Lwt.return @@ Bos.OS.File.read (Fpath.( // ) dir file) in
+    let** note =
+      Hmd.create_note ?api_url token
+        (Some
+           {
+             title = Fpath.filename file;
+             content;
+             readPermission = Owner;
+             writePermission = Owner;
+             commentPermission = Owners;
+           })
+    in
+    let++ () = Lwt.return @@ set_last_changed dir file note.lastChangedAt in
+    Config.add (note.id, file) config
+  in
+  (* For each file to update  *)
+  let+* config =
+    Lwt_list.fold_left_s
+      (fun config filename ->
+        let** config = Lwt.return config in
+        match Config.id_of_filename filename config with
+        | None -> create config filename
+        | Some id -> update id filename)
+      (Ok config) files
   in
   Config.set_config dir config
