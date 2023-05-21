@@ -2,7 +2,7 @@ module Hmd = Hockmd.V1
 
 module Result_syntax = struct
   let ( let= ) = Result.bind
-  (* let ( let| ) a b = Result.map b a *)
+  let ( let| ) a b = Result.map b a
 end
 
 module Combined_syntax = struct
@@ -35,21 +35,31 @@ module Combined_syntax = struct
     b x
 end
 
+let last_changed f =
+  let open Result_syntax in
+  let cmd = Bos.Cmd.(v "date" % "-r" % p f) in
+  let| d = Bos.OS.Cmd.run_out cmd |> Bos.OS.Cmd.to_string in
+  int_of_string d
+
 let pull token dir api_url =
   let open Combined_syntax in
   Logs.warn (fun m ->
       m "Pulling notes from %s"
         (match api_url with None -> "default repo" | Some v -> v));
+  (* Get notes *)
   let** notes = Hmd.notes ?api_url token in
   Logs.warn (fun m ->
       m "Got notes %a"
         (Fmt.list ~sep:Fmt.cut Fmt.string)
         (List.map (fun (note : Hmd.Types.note_summary) -> note.id) notes));
+  (* Get config *)
   let** config = Lwt.return @@ Config.get_config dir in
+  (* Update config given new note *)
   let to_remove = Config.obsolete_files config notes
   and old_config = config
   and config = Config.update_config config notes in
   let write id =
+    Logs.warn (fun m -> m "Pulling note %s" id);
     let+* note = Hmd.note ?api_url token id in
     let file =
       let id = note.Hmd.Types.id in
@@ -66,29 +76,12 @@ let pull token dir api_url =
       (fun r (note_summary : Hmd.Types.note_summary) ->
         let** () = Lwt.return r in
         match Config.last_updated_of_id note_summary.id old_config with
-        | None -> assert false
+        | None -> write note_summary.id
         | Some last_updated when last_updated < note_summary.lastChangedAt ->
-            Logs.warn (fun m -> m "Pulling note %s" note_summary.id);
             write note_summary.id
         | _ -> Lwt.return_ok ())
       (Ok ()) notes
   in
-  (* let config = *)
-  (*   let to_keep, to_remove = *)
-  (*     List.partition *)
-  (*       (fun (id, _) -> *)
-  (*         List.exists (fun note -> String.equal id note.Hmd.Types.id) notes) *)
-  (*       (Config.to_list config) *)
-  (*   in *)
-  (*   List.iter *)
-  (*     (fun (_, (path, _)) -> *)
-  (*       match Bos.OS.File.delete path with *)
-  (*       | Error (`Msg s) -> *)
-  (*           Logs.debug (fun m -> m "Error when deleting %a: %s" Fpath.pp path s) *)
-  (*       | Ok () -> ()) *)
-  (*     to_remove; *)
-  (*   Config.of_list (to_keep @ new_files) *)
-  (* in *)
   List.iter
     (fun path ->
       match Bos.OS.File.delete path with
@@ -101,14 +94,13 @@ let pull token dir api_url =
 let push token dir api_url =
   let open Lwt.Syntax in
   let open Combined_syntax in
+  Logs.warn (fun m -> m "Reading config");
   let** config = Lwt.return @@ Config.get_config dir in
-  (* | Error (`Msg s) -> *)
-  (*     Logs.debug (fun m -> m "Error when reading config file: %s" s); *)
-  (*     Lwt.return_ok () *)
-  (* | Ok config ->  *)
+  Logs.warn (fun m -> m "Config read");
   let* () =
     Lwt_list.iter_p
       (fun (id, (path, _)) ->
+        Logs.warn (fun m -> m "Sending note %s" id);
         match Bos.OS.File.read (Fpath.( // ) dir path) with
         | Error (`Msg s) ->
             Logs.debug (fun m -> m "Error when reading %a: %s" Fpath.pp path s);
@@ -124,25 +116,18 @@ let push token dir api_url =
             | Ok _ -> ()))
       (Config.to_list config)
   in
+  (* Now, check new files to add them to the config *)
   let config_list = Config.to_list config in
   match Bos.OS.Dir.contents ~rel:true dir with
   | Error (`Msg s) ->
-      Logs.debug (fun m ->
-          m "Error when listing files in %a: %s" Fpath.pp dir s);
+      Logs.warn (fun m -> m "Error when listing files in %a: %s" Fpath.pp dir s);
       Lwt.return_ok ()
   | Ok files ->
       let new_files =
         List.filter
           (fun file ->
             List.for_all
-              (fun (_, (p, _)) ->
-                if Fpath.equal file p then
-                  Logs.warn (fun m ->
-                      m "%a and %a are equal" Fpath.pp file Fpath.pp p)
-                else
-                  Logs.warn (fun m ->
-                      m "%a and %a are NOT equal" Fpath.pp file Fpath.pp p);
-                not (Fpath.equal file p))
+              (fun (_, (p, _)) -> not (Fpath.equal file p))
               config_list
             && Fpath.has_ext "md" file)
           files
@@ -150,9 +135,10 @@ let push token dir api_url =
       let+ new_files =
         Lwt_list.filter_map_p
           (fun file ->
-            match Bos.OS.File.read file with
+            Logs.warn (fun m -> m "Creating new note from %a" Fpath.pp file);
+            match Bos.OS.File.read (Fpath.( // ) dir file) with
             | Error (`Msg s) ->
-                Logs.debug (fun m ->
+                Logs.warn (fun m ->
                     m "Error when reading %a: %s" Fpath.pp file s);
                 Lwt.return None
             | Ok content -> (
@@ -168,7 +154,7 @@ let push token dir api_url =
                        })
                 in
                 match res with
-                | Ok note -> Some (note.id, (file, 0))
+                | Ok note -> Some (note.id, (file, note.lastChangedAt))
                 | Error (`Msg s) ->
                     Logs.debug (fun m ->
                         m "Error when creating note %a: %s" Fpath.pp file s);
@@ -265,23 +251,26 @@ let receive_pack api_url dir =
     |> get_ok "2"
   in
   let () = git_commit dir |> function _ -> () in
+  Logs.warn (fun m -> m "start receive_pack");
   let () =
     git_receive_pack dir |> function
     | Ok () -> ()
     | Error (`Msg s) -> Logs.warn (fun m -> m "error in receive_pack: %s" s)
   in
+  Logs.warn (fun m -> m "end receive_pack");
   let () =
     git_hard_reset dir |> function
     | Ok () -> ()
     | Error (`Msg s) -> Logs.warn (fun m -> m "error in hard reset: %s" s)
   in
-  let+* _ = push token dir api_url in
+  Logs.warn (fun m -> m "Before the push");
   let dir = Fpath.(v "/" / "home" / "user" // dir) in
-  let () = git_add_config dir |> get_ok "5" in
-  let () =
-    git_commit dir |> function
-    | Ok () -> ()
-    | Error (`Msg s) -> Logs.warn (fun m -> m "error in git commit: %s" s)
-  in
+  let+* _ = push token dir api_url in
+  (* let () = git_add_config dir |> get_ok "5" in *)
+  (* let () = *)
+  (*   git_commit dir |> function *)
+  (*   | Ok () -> () *)
+  (*   | Error (`Msg s) -> Logs.warn (fun m -> m "error in git commit: %s" s) *)
+  (* in *)
   Ok ()
 (* _ *)
