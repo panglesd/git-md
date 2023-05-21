@@ -34,7 +34,7 @@ let wrapper f token dir api () =
   | Error (`Msg s) -> Error s
 
 let pull =
-  let pull = wrapper Git_md.pull in
+  let pull = wrapper Git_md.Sync.pull in
   Term.(const pull $ token $ dir_opt $ api_opt $ setup_log)
 
 let pull_cmd =
@@ -44,7 +44,7 @@ let pull_cmd =
   Cmd.v info pull
 
 let push =
-  let push = wrapper Git_md.push in
+  let push = wrapper Git_md.Sync.push in
   Term.(const push $ token $ dir_opt $ api_opt $ setup_log)
 
 let push_cmd =
@@ -56,7 +56,7 @@ let push_cmd =
 let upload_pack =
   let upload_pack api dir () =
     let dir = Fpath.v dir in
-    match Lwt_main.run @@ Git_md.upload_pack api dir with
+    match Lwt_main.run @@ Git_md.Git.upload_pack api dir with
     | Ok () -> Ok ()
     | Error (`Msg s) -> Error s
   in
@@ -71,7 +71,7 @@ let upload_pack_cmd =
 let receive_pack =
   let receive_pack api dir () =
     let dir = Fpath.v dir in
-    match Lwt_main.run @@ Git_md.receive_pack api dir with
+    match Lwt_main.run @@ Git_md.Git.receive_pack api dir with
     | Ok () -> Ok ()
     | Error (`Msg s) -> Error s
   in

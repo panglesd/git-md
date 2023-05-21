@@ -1,53 +1,19 @@
-module Hmd = Hockmd.V1
+open Utils
 
-module Result_syntax = struct
-  let ( let= ) = Result.bind
-  let ( let| ) a b = Result.map b a
-end
-
-module Combined_syntax = struct
-  let ( let++ ) a b =
-    let open Lwt.Syntax in
-    let+ x = a in
-    let open Result_syntax in
-    let| x = x in
-    b x
-
-  let ( let** ) a b =
-    let open Lwt.Syntax in
-    let* x = a in
-    match x with Error e -> Lwt.return (Error e) | Ok o -> b o
-
-  (* let ( let*+ ) a b = *)
-  (*   let open Lwt.Syntax in *)
-  (*   let* x = a in *)
-  (*   match x with *)
-  (*   | Error e -> Lwt.return (Error e) *)
-  (*   | Ok o -> *)
-  (*       let+ r = b o in *)
-  (*       Ok r *)
-
-  let ( let+* ) a b =
-    let open Lwt.Syntax in
-    let+ x = a in
-    let open Result_syntax in
-    let= x = x in
-    b x
-end
-
-let last_changed f =
+let last_changed dir f =
+  let f = Fpath.( // ) dir f in
   let open Result_syntax in
   (* stat --format='%.3X' gnTW9iUwS2i8nv4p2UwiWQ.md *)
   let cmd = Bos.Cmd.(v "stat" % "--format" % "%.3X" % p f) in
   let| d = Bos.OS.Cmd.run_out cmd |> Bos.OS.Cmd.to_string in
-  Logs.warn (fun m -> m "Timestamp is %s" d);
   let ios = int_of_string in
   match String.split_on_char ',' d with
   | [ i; s ] -> (ios i * 1000) + ios s (* Hackmd uses "milliseconds epoch" *)
   | _ -> failwith ""
 
-let set_last_changed f timestamp =
+let set_last_changed dir f timestamp =
   (* Hackmd uses "milliseconds epoch" *)
+  let f = Fpath.( // ) dir f in
   let s = string_of_int timestamp in
   let i = String.sub s 0 (String.length s - 3)
   and s = String.sub s (String.length s - 3) 3 in
@@ -95,11 +61,11 @@ let pull token dir api_url =
       Lwt.return @@ Bos.OS.File.write (Fpath.( // ) dir file) note.content
     in
     (* Update timestamp *)
-    set_last_changed (Fpath.( // ) dir file) note.lastChangedAt
+    set_last_changed dir file note.lastChangedAt
   in
   (* Fold the notes and do the update if the timestamp says so. Update the
      config when creating new fles *)
-  let+* config =
+  let** config =
     Lwt_list.fold_left_s
       (fun r (note_summary : Hmd.Types.note_summary) ->
         let** config = Lwt.return r in
@@ -109,7 +75,7 @@ let pull token dir api_url =
               let file = Fpath.v (note_summary.id ^ ".md") in
               Lwt.return_ok (file, 0, Config.add (note_summary.id, file) config)
           | Some file ->
-              let++ timestamp = Lwt.return @@ last_changed file in
+              let++ timestamp = Lwt.return @@ last_changed dir file in
               (file, timestamp, config)
         in
         let++ () =
@@ -128,7 +94,9 @@ let pull token dir api_url =
           Logs.debug (fun m -> m "Error when deleting %a: %s" Fpath.pp path s)
       | Ok () -> ())
     to_remove;
-  Config.set_config dir config
+  Logs.warn (fun m -> m "Writing new config...");
+  let++ () = Lwt.return @@ Config.set_config dir config in
+  Logs.warn (fun m -> m "New config written.")
 
 let push token dir api_url =
   let open Lwt.Syntax in
@@ -155,7 +123,7 @@ let push token dir api_url =
             Lwt.return (Ok ())
         | Ok _ ->
             let+* note = Hmd.note ?api_url token id in
-            set_last_changed path note.lastChangedAt)
+            set_last_changed dir path note.lastChangedAt)
   in
   (* For each note _in the config_, update it if needed.  *)
   let** () =
@@ -172,7 +140,7 @@ let push token dir api_url =
           | None -> 0
           | Some n -> n.lastChangedAt
         in
-        let** file_timestamp = Lwt.return @@ last_changed path in
+        let** file_timestamp = Lwt.return @@ last_changed dir path in
         if server_timestamp < file_timestamp then update id path
         else Lwt.return_ok ())
       (Ok ()) (Config.to_list config)
@@ -211,136 +179,8 @@ let push token dir api_url =
                  commentPermission = Owners;
                })
         in
-        let++ () = Lwt.return @@ set_last_changed file note.lastChangedAt in
+        let++ () = Lwt.return @@ set_last_changed dir file note.lastChangedAt in
         Config.add (note.id, file) config)
       (Ok config) new_files
   in
   Config.set_config dir config
-
-(*   (\* Now, check new files to add them to the config *\) *)
-(* let config_list = Config.to_list config in *)
-(* match Bos.OS.Dir.contents ~rel:true dir with *)
-(* | Error (`Msg s) -> *)
-(*     Logs.warn (fun m -> m "Error when listing files in %a: %s" Fpath.pp dir s); *)
-(*     Lwt.return_ok () *)
-(* | Ok files -> *)
-(*     let new_files = *)
-(*       List.filter *)
-(*         (fun file -> *)
-(*           List.for_all *)
-(*             (fun (_, (p, _)) -> not (Fpath.equal file p)) *)
-(*             config_list *)
-(*           && Fpath.has_ext "md" file) *)
-(*         files *)
-(*     in *)
-
-let git_add dir file =
-  let open Result_syntax in
-  let= current = Bos.OS.Dir.current () in
-  let= () = Bos.OS.Dir.set_current dir in
-  let cmd = Bos.Cmd.(v "git" % "add" % p file) in
-  let= () = Bos.OS.Cmd.run_out cmd |> Bos.OS.Cmd.to_null in
-  Bos.OS.Dir.set_current current
-
-let git_commit dir =
-  let open Result_syntax in
-  let= current = Bos.OS.Dir.current () in
-  let= () = Bos.OS.Dir.set_current dir in
-  let cmd = Bos.Cmd.(v "git" % "commit" % "-m" % "Update from hackmd") in
-  let= () = Bos.OS.Cmd.run_out cmd |> Bos.OS.Cmd.to_null in
-  Bos.OS.Dir.set_current current
-
-let git_init dir =
-  let cmd = Bos.Cmd.(v "git" % "init" % p dir) in
-  Bos.OS.Cmd.run_out cmd |> Bos.OS.Cmd.to_null
-
-let git_upload_pack dir =
-  let cmd = Bos.Cmd.(v "git" % "upload-pack" % p dir) in
-  Bos.OS.Cmd.run cmd
-
-let git_receive_pack dir =
-  let cmd =
-    Bos.Cmd.(
-      v "git" % "receive-pack" % p Fpath.(v "/" / "home" / "user" // dir))
-  in
-  Bos.OS.Cmd.run cmd
-
-let git_hard_reset dir =
-  let open Result_syntax in
-  let= current = Bos.OS.Dir.current () in
-  let= () = Bos.OS.Dir.set_current Fpath.(v "/" / "home" / "user" // dir) in
-  let cmd = Bos.Cmd.(v "git" % "reset" % "--hard") in
-  let= () = Bos.OS.Cmd.run_out cmd |> Bos.OS.Cmd.to_null in
-  Bos.OS.Dir.set_current current
-
-let git_add_config dir =
-  let config_file = Config.config_file in
-  git_add dir config_file
-
-let upload_pack api_url dir =
-  let open Combined_syntax in
-  let open Result_syntax in
-  let token = Hmd.token_of_string @@ Fpath.basename dir in
-  let _ =
-    match Bos.OS.Dir.create dir with
-    | Error (`Msg _) -> failwith ""
-    | Ok _ -> git_init dir
-  in
-  let+* () = pull token dir api_url in
-  let= config = Config.get_config dir in
-  let= () =
-    List.fold_left
-      (fun err (_, path) ->
-        let= () = err in
-        git_add dir path)
-      (Ok ()) (Config.to_list config)
-  in
-  let= () = git_add_config dir in
-  let= () = git_commit dir in
-  git_upload_pack dir
-(* _ *)
-
-let receive_pack api_url dir =
-  let open Combined_syntax in
-  let open Result_syntax in
-  let token = Hmd.token_of_string @@ Fpath.basename dir in
-  let _ =
-    match Bos.OS.Dir.create dir with
-    | Error (`Msg _) -> failwith ""
-    | Ok _ -> git_init dir
-  in
-  let** () = pull token dir api_url in
-  let get_ok msg = function Error _ -> failwith msg | Ok x -> x in
-  let config = Config.get_config dir |> get_ok "1" in
-  let () =
-    List.fold_left
-      (fun err (_, path) ->
-        let= () = err in
-        git_add dir path)
-      (Ok ()) (Config.to_list config)
-    |> get_ok "2"
-  in
-  let () = git_commit dir |> function _ -> () in
-  Logs.warn (fun m -> m "start receive_pack");
-  let () =
-    git_receive_pack dir |> function
-    | Ok () -> ()
-    | Error (`Msg s) -> Logs.warn (fun m -> m "error in receive_pack: %s" s)
-  in
-  Logs.warn (fun m -> m "end receive_pack");
-  let () =
-    git_hard_reset dir |> function
-    | Ok () -> ()
-    | Error (`Msg s) -> Logs.warn (fun m -> m "error in hard reset: %s" s)
-  in
-  Logs.warn (fun m -> m "Before the push");
-  let dir = Fpath.(v "/" / "home" / "user" // dir) in
-  let+* _ = push token dir api_url in
-  (* let () = git_add_config dir |> get_ok "5" in *)
-  (* let () = *)
-  (*   git_commit dir |> function *)
-  (*   | Ok () -> () *)
-  (*   | Error (`Msg s) -> Logs.warn (fun m -> m "error in git commit: %s" s) *)
-  (* in *)
-  Ok ()
-(* _ *)
