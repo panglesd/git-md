@@ -37,12 +37,21 @@ end
 
 let last_changed f =
   let open Result_syntax in
-  let cmd = Bos.Cmd.(v "date" % "-r" % p f) in
+  (* stat --format='%.3X' gnTW9iUwS2i8nv4p2UwiWQ.md *)
+  let cmd = Bos.Cmd.(v "stat" % "--format" % "%.3X" % p f) in
   let| d = Bos.OS.Cmd.run_out cmd |> Bos.OS.Cmd.to_string in
-  int_of_string d
+  Logs.warn (fun m -> m "Timestamp is %s" d);
+  let ios = int_of_string in
+  match String.split_on_char ',' d with
+  | [ i; s ] -> (ios i * 1000) + ios s (* Hackmd uses "milliseconds epoch" *)
+  | _ -> failwith ""
 
 let set_last_changed f timestamp =
-  let timestamp = "@" ^ string_of_int timestamp in
+  (* Hackmd uses "milliseconds epoch" *)
+  let s = string_of_int timestamp in
+  let i = String.sub s 0 (String.length s - 3)
+  and s = String.sub s (String.length s - 3) 3 in
+  let timestamp = "@" ^ i ^ "," ^ s in
   let cmd = Bos.Cmd.(v "touch" % "-d" % timestamp % p f) in
   Bos.OS.Cmd.run cmd
 
