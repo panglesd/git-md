@@ -6,12 +6,12 @@ module Result_syntax = struct
 end
 
 module Combined_syntax = struct
-  (* let ( let++ ) a b = *)
-  (*   let open Lwt.Syntax in *)
-  (*   let+ x = a in *)
-  (*   let open Result_syntax in *)
-  (*   let| x = x in *)
-  (*   b x *)
+  let ( let++ ) a b =
+    let open Lwt.Syntax in
+    let+ x = a in
+    let open Result_syntax in
+    let| x = x in
+    b x
 
   let ( let** ) a b =
     let open Lwt.Syntax in
@@ -41,47 +41,77 @@ let last_changed f =
   let| d = Bos.OS.Cmd.run_out cmd |> Bos.OS.Cmd.to_string in
   int_of_string d
 
-let pull token dir api_url =
+let set_last_changed f timestamp =
+  let timestamp = "@" ^ string_of_int timestamp in
+  let cmd = Bos.Cmd.(v "touch" % "-d" % timestamp % p f) in
+  Bos.OS.Cmd.run cmd
+
+let get_notes ?api_url token =
   let open Combined_syntax in
   Logs.warn (fun m ->
       m "Pulling notes from %s"
         (match api_url with None -> "default repo" | Some v -> v));
-  (* Get notes *)
-  let** notes = Hmd.notes ?api_url token in
+  let++ notes = Hmd.notes ?api_url token in
   Logs.warn (fun m ->
       m "Got notes %a"
         (Fmt.list ~sep:Fmt.cut Fmt.string)
         (List.map (fun (note : Hmd.Types.note_summary) -> note.id) notes));
+  notes
+
+let get_config dir =
+  let open Combined_syntax in
+  Logs.warn (fun m -> m "Reading config");
   (* Get config *)
-  let** config = Lwt.return @@ Config.get_config dir in
-  (* Update config given new note *)
-  let to_remove = Config.obsolete_files config notes
-  and old_config = config
-  and config = Config.update_config config notes in
-  let write id =
+  let++ config = Lwt.return @@ Config.get_config dir in
+  Logs.warn (fun m -> m "Config read");
+  config
+
+let pull token dir api_url =
+  let open Combined_syntax in
+  (* Get notes *)
+  let** notes = get_notes ?api_url token in
+  (* Get config *)
+  let** config = get_config dir in
+  (* Update config given new note: add new notes to the config, and get obsolete
+     ones. *)
+  let to_remove = Config.obsolete_files config notes in
+  (* Update a file-system note from a note in hackmd *)
+  let write id file =
     Logs.warn (fun m -> m "Pulling note %s" id);
-    let+* note = Hmd.note ?api_url token id in
-    let file =
-      let id = note.Hmd.Types.id in
-      match Config.filename_of_id id config with
-      | None -> Fpath.v (id ^ ".md")
-      | Some f -> f
+    (* Get the note *)
+    let** note = Hmd.note ?api_url token id in
+    Logs.debug (fun m -> m "Writing %a: %s" Fpath.pp file note.content);
+    (* Write content *)
+    let+* () =
+      Lwt.return @@ Bos.OS.File.write (Fpath.( // ) dir file) note.content
     in
-    let ct = note.Hmd.Types.content in
-    Logs.debug (fun m -> m "Writing %a: %s" Fpath.pp file ct);
-    Bos.OS.File.write (Fpath.( // ) dir file) ct
+    (* Update timestamp *)
+    set_last_changed (Fpath.( // ) dir file) note.lastChangedAt
   in
-  let+* () =
+  (* Fold the notes and do the update if the timestamp says so. Update the
+     config when creating new fles *)
+  let+* config =
     Lwt_list.fold_left_s
       (fun r (note_summary : Hmd.Types.note_summary) ->
-        let** () = Lwt.return r in
-        match Config.last_updated_of_id note_summary.id old_config with
-        | None -> write note_summary.id
-        | Some last_updated when last_updated < note_summary.lastChangedAt ->
-            write note_summary.id
-        | _ -> Lwt.return_ok ())
-      (Ok ()) notes
+        let** config = Lwt.return r in
+        let** file, file_timestamp, config =
+          match Config.filename_of_id note_summary.id config with
+          | None ->
+              let file = Fpath.v (note_summary.id ^ ".md") in
+              Lwt.return_ok (file, 0, Config.add (note_summary.id, file) config)
+          | Some file ->
+              let++ timestamp = Lwt.return @@ last_changed file in
+              (file, timestamp, config)
+        in
+        let++ () =
+          if file_timestamp < note_summary.lastChangedAt then
+            write note_summary.id file
+          else Lwt.return_ok ()
+        in
+        config)
+      (Ok config) notes
   in
+  (* Delete unnecessary files *)
   List.iter
     (fun path ->
       match Bos.OS.File.delete path with
@@ -94,75 +124,106 @@ let pull token dir api_url =
 let push token dir api_url =
   let open Lwt.Syntax in
   let open Combined_syntax in
-  Logs.warn (fun m -> m "Reading config");
-  let** config = Lwt.return @@ Config.get_config dir in
-  Logs.warn (fun m -> m "Config read");
-  let* () =
-    Lwt_list.iter_p
-      (fun (id, (path, _)) ->
-        Logs.warn (fun m -> m "Sending note %s" id);
-        match Bos.OS.File.read (Fpath.( // ) dir path) with
+  (* Get notes *)
+  let** notes = get_notes ?api_url token in
+  (* Get config *)
+  let** config = get_config dir in
+  (* Update function *)
+  let update id path =
+    Logs.warn (fun m -> m "Sending note %s" id);
+    match Bos.OS.File.read (Fpath.( // ) dir path) with
+    | Error (`Msg s) ->
+        Logs.debug (fun m -> m "Error when reading %a: %s" Fpath.pp path s);
+        Lwt.return_ok ()
+    | Ok content -> (
+        let* p =
+          Hmd.update_note ?api_url token id
+            (Some { content; readPermission = Owner })
+        in
+        match p with
         | Error (`Msg s) ->
-            Logs.debug (fun m -> m "Error when reading %a: %s" Fpath.pp path s);
-            Lwt.return ()
-        | Ok content -> (
-            let+ p =
-              Hmd.update_note ?api_url token id
-                (Some { content; readPermission = Owner })
-            in
-            match p with
-            | Error (`Msg s) ->
-                Logs.debug (fun m -> m "Error when updating %s: %s" id s)
-            | Ok _ -> ()))
-      (Config.to_list config)
+            Logs.debug (fun m -> m "Error when updating %s: %s" id s);
+            Lwt.return (Ok ())
+        | Ok _ ->
+            let+* note = Hmd.note ?api_url token id in
+            set_last_changed path note.lastChangedAt)
   in
-  (* Now, check new files to add them to the config *)
-  let config_list = Config.to_list config in
-  match Bos.OS.Dir.contents ~rel:true dir with
-  | Error (`Msg s) ->
-      Logs.warn (fun m -> m "Error when listing files in %a: %s" Fpath.pp dir s);
-      Lwt.return_ok ()
-  | Ok files ->
-      let new_files =
+  (* For each note _in the config_, update it if needed.  *)
+  let** () =
+    Lwt_list.fold_left_s
+      (fun r (id, path) ->
+        let** () = Lwt.return r in
+        let server_timestamp =
+          match
+            List.find_opt
+              (fun (note_summary : Hmd.Types.note_summary) ->
+                String.equal note_summary.id id)
+              notes
+          with
+          | None -> 0
+          | Some n -> n.lastChangedAt
+        in
+        let** file_timestamp = Lwt.return @@ last_changed path in
+        if server_timestamp < file_timestamp then update id path
+        else Lwt.return_ok ())
+      (Ok ()) (Config.to_list config)
+  in
+  (* Find files outside of the config *)
+  let new_files =
+    match Bos.OS.Dir.contents ~rel:true dir with
+    | Error (`Msg s) ->
+        Logs.warn (fun m ->
+            m "Error when listing files in %a: %s" Fpath.pp dir s);
+        []
+    | Ok files ->
         List.filter
           (fun file ->
-            List.for_all
-              (fun (_, (p, _)) -> not (Fpath.equal file p))
-              config_list
+            Option.is_none (Config.id_of_filename file config)
             && Fpath.has_ext "md" file)
           files
-      in
-      let+ new_files =
-        Lwt_list.filter_map_p
-          (fun file ->
-            Logs.warn (fun m -> m "Creating new note from %a" Fpath.pp file);
-            match Bos.OS.File.read (Fpath.( // ) dir file) with
-            | Error (`Msg s) ->
-                Logs.warn (fun m ->
-                    m "Error when reading %a: %s" Fpath.pp file s);
-                Lwt.return None
-            | Ok content -> (
-                let+ res =
-                  Hmd.create_note ?api_url token
-                    (Some
-                       {
-                         title = Fpath.filename file;
-                         content;
-                         readPermission = Owner;
-                         writePermission = Owner;
-                         commentPermission = Owners;
-                       })
-                in
-                match res with
-                | Ok note -> Some (note.id, (file, note.lastChangedAt))
-                | Error (`Msg s) ->
-                    Logs.debug (fun m ->
-                        m "Error when creating note %a: %s" Fpath.pp file s);
-                    None))
-          new_files
-      in
-      let new_config = Config.of_list (config_list @ new_files) in
-      Config.set_config dir new_config
+  in
+  (* Create notes and add the files to the config *)
+  let+* config =
+    Lwt_list.fold_left_s
+      (fun config file ->
+        let** config = Lwt.return config in
+        Logs.warn (fun m -> m "Creating new note from %a" Fpath.pp file);
+        let** content =
+          Lwt.return @@ Bos.OS.File.read (Fpath.( // ) dir file)
+        in
+        let** note =
+          Hmd.create_note ?api_url token
+            (Some
+               {
+                 title = Fpath.filename file;
+                 content;
+                 readPermission = Owner;
+                 writePermission = Owner;
+                 commentPermission = Owners;
+               })
+        in
+        let++ () = Lwt.return @@ set_last_changed file note.lastChangedAt in
+        Config.add (note.id, file) config)
+      (Ok config) new_files
+  in
+  Config.set_config dir config
+
+(*   (\* Now, check new files to add them to the config *\) *)
+(* let config_list = Config.to_list config in *)
+(* match Bos.OS.Dir.contents ~rel:true dir with *)
+(* | Error (`Msg s) -> *)
+(*     Logs.warn (fun m -> m "Error when listing files in %a: %s" Fpath.pp dir s); *)
+(*     Lwt.return_ok () *)
+(* | Ok files -> *)
+(*     let new_files = *)
+(*       List.filter *)
+(*         (fun file -> *)
+(*           List.for_all *)
+(*             (fun (_, (p, _)) -> not (Fpath.equal file p)) *)
+(*             config_list *)
+(*           && Fpath.has_ext "md" file) *)
+(*         files *)
+(*     in *)
 
 let git_add dir file =
   let open Result_syntax in
@@ -220,7 +281,7 @@ let upload_pack api_url dir =
   let= config = Config.get_config dir in
   let= () =
     List.fold_left
-      (fun err (_, (path, _)) ->
+      (fun err (_, path) ->
         let= () = err in
         git_add dir path)
       (Ok ()) (Config.to_list config)
@@ -244,7 +305,7 @@ let receive_pack api_url dir =
   let config = Config.get_config dir |> get_ok "1" in
   let () =
     List.fold_left
-      (fun err (_, (path, _)) ->
+      (fun err (_, path) ->
         let= () = err in
         git_add dir path)
       (Ok ()) (Config.to_list config)
