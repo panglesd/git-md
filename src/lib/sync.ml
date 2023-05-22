@@ -9,7 +9,12 @@ let last_changed dir f =
   let ios = int_of_string in
   match String.split_on_char ',' d with
   | [ i; s ] -> (ios i * 1000) + ios s (* Hackmd uses "milliseconds epoch" *)
-  | _ -> failwith ""
+  | _ -> (
+      (* some version use '.' *)
+      match String.split_on_char '.' d with
+      | [ i; s ] ->
+          (ios i * 1000) + ios s (* Hackmd uses "milliseconds epoch" *)
+      | _ -> failwith ("do not recognize last changed " ^ d))
 
 let set_last_changed dir f timestamp =
   (* Hackmd uses "milliseconds epoch" *)

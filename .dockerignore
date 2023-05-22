@@ -1,0 +1,6 @@
+*
+!src/
+!test/
+!dune
+!dune-project
+!git_md.opam

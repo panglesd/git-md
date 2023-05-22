@@ -32,7 +32,7 @@ let git_clone repo dir =
 let git_push dir =
   let open Result_syntax in
   let= current = Bos.OS.Dir.current () in
-  let= () = Bos.OS.Dir.set_current Fpath.(v "/" / "home" / "user" // dir) in
+  let= () = Bos.OS.Dir.set_current dir in
   (* Specify upload-pack *)
   let cmd = Bos.Cmd.(v "git" % "push") in
   let= () = Bos.OS.Cmd.run_out cmd |> Bos.OS.Cmd.to_null in
@@ -41,7 +41,7 @@ let git_push dir =
 let git_pull dir =
   let open Result_syntax in
   let= current = Bos.OS.Dir.current () in
-  let= () = Bos.OS.Dir.set_current Fpath.(v "/" / "home" / "user" // dir) in
+  let= () = Bos.OS.Dir.set_current dir in
   (* Specify upload-pack *)
   let cmd = Bos.Cmd.(v "git" % "pull") in
   let= () = Bos.OS.Cmd.run_out cmd |> Bos.OS.Cmd.to_null in
@@ -50,7 +50,7 @@ let git_pull dir =
 let git_fetch dir =
   let open Result_syntax in
   let= current = Bos.OS.Dir.current () in
-  let= () = Bos.OS.Dir.set_current Fpath.(v "/" / "home" / "user" // dir) in
+  let= () = Bos.OS.Dir.set_current dir in
   (* Specify upload-pack *)
   let cmd = Bos.Cmd.(v "git" % "fetch") in
   let= () = Bos.OS.Cmd.run_out cmd |> Bos.OS.Cmd.to_null in
@@ -76,10 +76,7 @@ let git_upload_pack dir =
   Bos.OS.Cmd.run cmd
 
 let git_receive_pack dir =
-  let cmd =
-    Bos.Cmd.(
-      v "git" % "receive-pack" % p Fpath.(v "/" / "home" / "user" // dir))
-  in
+  let cmd = Bos.Cmd.(v "git" % "receive-pack" % p dir) in
   Bos.OS.Cmd.run cmd
 
 let git_add_config dir =
@@ -120,7 +117,7 @@ let upload_pack api_url dir =
 let files_to_update dir =
   let open Result_syntax in
   let= current = Bos.OS.Dir.current () in
-  let= () = Bos.OS.Dir.set_current Fpath.(v "/" / "home" / "user" // dir) in
+  let= () = Bos.OS.Dir.set_current dir in
   (* Specify upload-pack *)
   let cmd =
     Bos.Cmd.(v "git" % "diff" % "--name-only" % "master..origin/master")

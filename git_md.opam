@@ -12,6 +12,10 @@ bug-reports: "https://github.com/username/reponame/issues"
 depends: [
   "ocaml"
   "dune" {>= "3.6"}
+  "hockmd"
+  "logs"
+  "cmdliner"
+  "lwt_ssl"
   "odoc" {with-doc}
 ]
 build: [
@@ -29,3 +33,6 @@ build: [
   ]
 ]
 dev-repo: "git+https://github.com/username/reponame.git"
+pin-depends: [
+  [ "hockmd.dev" "git+https://github.com/panglesd/hockmd#9a7c921a0a922bba80c874c42fee46a52b70eedd" ]
+]
