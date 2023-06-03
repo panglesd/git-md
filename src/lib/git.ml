@@ -109,10 +109,13 @@ let upload_pack api_url dir =
   let open Combined_syntax in
   (* Extract token from directory *)
   let token = Hmd.token_of_string @@ Fpath.basename dir in
+  Logs.warn (fun m -> m "Token is %s" (Fpath.basename dir));
   (* Update the bare repo *)
-  let+* bare_dir, _hm_dir = git_update token api_url dir in
+  let** bare_dir, _hm_dir = git_update token api_url dir in
   (* Answer the original request *)
-  git_upload_pack bare_dir
+  let++ res = Lwt.return @@ git_upload_pack bare_dir in
+  Logs.warn (fun m -> m "Done");
+  res
 
 let files_to_update dir =
   let open Result_syntax in
@@ -124,7 +127,9 @@ let files_to_update dir =
   in
   let= modified_files = Bos.OS.Cmd.run_out cmd |> Bos.OS.Cmd.to_lines in
   let| () = Bos.OS.Dir.set_current current in
-  List.map Fpath.v modified_files
+  List.filter_map
+    (function ".git_md" -> None | x -> Some (Fpath.v x))
+    modified_files
 
 let receive_pack api_url dir =
   let open Combined_syntax in
@@ -146,4 +151,6 @@ let receive_pack api_url dir =
   let** () = Lwt.return @@ git_commit hm_dir "Update from hackmd" in
   (* Push all this to the bare repo *)
   let** () = Lwt.return @@ git_push hm_dir in
-  Sync.push_files token hm_dir modified_files api_url
+  let++ res = Sync.push_files token hm_dir modified_files api_url in
+  Logs.warn (fun m -> m "Done");
+  res

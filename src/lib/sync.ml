@@ -29,35 +29,27 @@ let set_last_changed dir f timestamp =
 let get_notes ?api_url token =
   let open Combined_syntax in
   Logs.warn (fun m ->
-      m "Pulling notes from %s"
+      m "Pulling notes from %s..."
         (match api_url with None -> "default repo" | Some v -> v));
   let++ notes = Hmd.notes ?api_url token in
   Logs.warn (fun m ->
-      m "Got notes %a"
-        (Fmt.list ~sep:Fmt.cut Fmt.string)
-        (List.map (fun (note : Hmd.Types.note_summary) -> note.id) notes));
+      m "Found %d notes on the repository" (List.length notes)
+      (* (Fmt.list ~sep:Fmt.sp Fmt.string) *)
+      (* (List.map (fun (note : Hmd.Types.note_summary) -> note.id) notes) *));
   notes
-
-let get_config dir =
-  let open Combined_syntax in
-  Logs.warn (fun m -> m "Reading config");
-  (* Get config *)
-  let++ config = Lwt.return @@ Config.get_config dir in
-  Logs.warn (fun m -> m "Config read");
-  config
 
 let pull token dir api_url =
   let open Combined_syntax in
   (* Get notes *)
   let** notes = get_notes ?api_url token in
   (* Get config *)
-  let** config = get_config dir in
+  let** config = Lwt.return @@ Config.get_config dir in
   (* Update config given new note: add new notes to the config, and get obsolete
      ones. *)
   let to_remove = Config.obsolete_files config notes in
   (* Update a file-system note from a note in hackmd *)
-  let write id file =
-    Logs.warn (fun m -> m "Pulling note %s" id);
+  let write id title file =
+    Logs.warn (fun m -> m "Pulling note %s (%s)..." title id);
     (* Get the note *)
     let** note = Hmd.note ?api_url token id in
     Logs.debug (fun m -> m "Writing %a: %s" Fpath.pp file note.content);
@@ -68,40 +60,58 @@ let pull token dir api_url =
     (* Update timestamp *)
     set_last_changed dir file note.lastChangedAt
   in
-  (* Fold the notes and do the update if the timestamp says so. Update the
-     config when creating new fles *)
-  let** config =
-    Lwt_list.fold_left_s
-      (fun r (note_summary : Hmd.Types.note_summary) ->
-        let** config = Lwt.return r in
-        let** file, file_timestamp, config =
-          match Config.filename_of_id note_summary.id config with
-          | None ->
-              let file = Fpath.v (note_summary.id ^ ".md") in
-              Lwt.return_ok (file, 0, Config.add (note_summary.id, file) config)
-          | Some file ->
-              let++ timestamp = Lwt.return @@ last_changed dir file in
-              (file, timestamp, config)
-        in
-        let++ () =
+  (* Fold the notes and accumulate note+file if the timestamp says so. Update the
+     config when creating new files *)
+  let** config, files_to_update =
+    let open Result_syntax in
+    let res =
+      List.fold_left
+        (fun r (note_summary : Hmd.Types.note_summary) ->
+          let= config, notes_with_file = r in
+          let= file, file_timestamp, config =
+            match Config.filename_of_id note_summary.id config with
+            | None ->
+                let file = Fpath.v (note_summary.id ^ ".md") in
+                let config = Config.add (note_summary.id, file) config in
+                Ok (file, 0, config)
+            | Some file ->
+                let| timestamp = last_changed dir file in
+                (file, timestamp, config)
+          in
           if file_timestamp < note_summary.lastChangedAt then
-            write note_summary.id file
-          else Lwt.return_ok ()
-        in
-        config)
-      (Ok config) notes
+            Ok (config, (note_summary, file) :: notes_with_file)
+          else Ok (config, notes_with_file))
+        (Ok (config, []))
+        notes
+    in
+    Lwt.return res
+  in
+  Logs.warn (fun m ->
+      m "Found %d notes needing update: %a..."
+        (List.length files_to_update)
+        (Fmt.list ~sep:Fmt.sp Fmt.string)
+        (List.map
+           (fun ((note : Hmd.Types.note_summary), _) -> note.id)
+           files_to_update));
+  (* Do the update for aggregated notes+file *)
+  let+* () =
+    Lwt_list.fold_left_s
+      (fun r ((note_summary : Hmd.Types.note_summary), file) ->
+        let** () = Lwt.return r in
+        write note_summary.id note_summary.title file)
+      (Ok ()) files_to_update
   in
   (* Delete unnecessary files *)
   List.iter
     (fun path ->
+      Logs.warn (fun m ->
+          m "Deleting %a as it's not anymore in Hackmd..." Fpath.pp path);
       match Bos.OS.File.delete path with
       | Error (`Msg s) ->
           Logs.debug (fun m -> m "Error when deleting %a: %s" Fpath.pp path s)
       | Ok () -> ())
     to_remove;
-  Logs.warn (fun m -> m "Writing new config...");
-  let++ () = Lwt.return @@ Config.set_config dir config in
-  Logs.warn (fun m -> m "New config written.")
+  Config.set_config dir config
 
 let push token dir api_url =
   let open Lwt.Syntax in
@@ -109,10 +119,10 @@ let push token dir api_url =
   (* Get notes *)
   let** notes = get_notes ?api_url token in
   (* Get config *)
-  let** config = get_config dir in
+  let** config = Lwt.return @@ Config.get_config dir in
   (* Update function *)
-  let update id path =
-    Logs.warn (fun m -> m "Sending note %s" id);
+  let update id title path =
+    Logs.warn (fun m -> m "Sending note %s (%s)" title id);
     match Bos.OS.File.read (Fpath.( // ) dir path) with
     | Error (`Msg s) ->
         Logs.debug (fun m -> m "Error when reading %a: %s" Fpath.pp path s);
@@ -131,24 +141,40 @@ let push token dir api_url =
             set_last_changed dir path note.lastChangedAt)
   in
   (* For each note _in the config_, update it if needed.  *)
+  let** files_to_update =
+    let res =
+      List.fold_left
+        (fun r (id, path) ->
+          let open Result_syntax in
+          let= r = r in
+          let server_timestamp, title =
+            match
+              List.find_opt
+                (fun (note_summary : Hmd.Types.note_summary) ->
+                  String.equal note_summary.id id)
+                notes
+            with
+            | None -> (0, "Untitled" (* has been deleted... *))
+            | Some n -> (n.lastChangedAt, n.title)
+          in
+          let| file_timestamp = last_changed dir path in
+          if server_timestamp < file_timestamp then (id, title, path) :: r
+          else r)
+        (Ok []) (Config.to_list config)
+    in
+    Lwt.return res
+  in
+  Logs.warn (fun m ->
+      m "Found %d notes needing update: %a..."
+        (List.length files_to_update)
+        (Fmt.list ~sep:Fmt.sp Fmt.string)
+        (List.map (fun (id, _, _) -> id) files_to_update));
   let** () =
     Lwt_list.fold_left_s
-      (fun r (id, path) ->
+      (fun r (id, title, path) ->
         let** () = Lwt.return r in
-        let server_timestamp =
-          match
-            List.find_opt
-              (fun (note_summary : Hmd.Types.note_summary) ->
-                String.equal note_summary.id id)
-              notes
-          with
-          | None -> 0 (* has been deleted... *)
-          | Some n -> n.lastChangedAt
-        in
-        let** file_timestamp = Lwt.return @@ last_changed dir path in
-        if server_timestamp < file_timestamp then update id path
-        else Lwt.return_ok ())
-      (Ok ()) (Config.to_list config)
+        update id title path)
+      (Ok ()) files_to_update
   in
   (* Find files outside of the config *)
   let new_files =
@@ -193,10 +219,10 @@ let push token dir api_url =
 let push_files token dir files api_url =
   let open Combined_syntax in
   (* Get config *)
-  let** config = get_config dir in
+  let** config = Lwt.return @@ Config.get_config dir in
   (* Update function *)
   let update id path =
-    Logs.warn (fun m -> m "Sending note %s" id);
+    Logs.warn (fun m -> m "Sending note %a to hackmd note %s" Fpath.pp path id);
     match Bos.OS.File.read (Fpath.( // ) dir path) with
     | Error (`Msg s) ->
         Logs.debug (fun m -> m "Error when reading %a: %s" Fpath.pp path s);

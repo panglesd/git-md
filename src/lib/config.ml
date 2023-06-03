@@ -6,27 +6,35 @@ let config_file = Fpath.v ".git_md"
 type config = (Hockmd.V1.Types.note_id * Fpath.t) list
 
 let get_config dir =
+  Logs.warn (fun m -> m "Reading config...");
   let conf_file = conf_file dir in
   let* () =
     let* exist = Bos.OS.File.exists conf_file in
     if not exist then Bos.OS.File.write_lines conf_file [] else Ok ()
   in
   let+ conf_content = Bos.OS.File.read_lines conf_file in
-  List.filter_map
-    (fun s ->
-      match Astring.String.cut ~sep:":" s with
-      | Some (id, filename) -> Some (id, Fpath.v filename)
-      | None ->
-          Logs.warn (fun m -> m "Ignoring unparsable line: %s" s);
-          None)
-    conf_content
+  let res =
+    List.filter_map
+      (fun s ->
+        match Astring.String.cut ~sep:":" s with
+        | Some (id, filename) -> Some (id, Fpath.v filename)
+        | None ->
+            Logs.warn (fun m -> m "Ignoring unparsable line: %s" s);
+            None)
+      conf_content
+  in
+  Logs.warn (fun m -> m "Config read");
+  res
 
 let set_config dir config =
+  Logs.warn (fun m -> m "Writing new config...");
   let lines =
     List.map (fun (id, file) -> Format.asprintf "%s:%a" id Fpath.pp file) config
   in
   let conf_file = conf_file dir in
-  Bos.OS.File.write_lines conf_file lines
+  let+ res = Bos.OS.File.write_lines conf_file lines in
+  Logs.warn (fun m -> m "New config written.");
+  res
 
 let filename_of_id id config = List.assoc_opt id config
 

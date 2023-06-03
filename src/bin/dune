@@ -1,4 +1,4 @@
-(executable
- (public_name git_md)
- (name main)
+(executables
+ (public_names git_md git_md_shell)
+ (names main git_shell)
  (libraries git_md cmdliner fpath logs.cli fmt.cli fmt.tty))
