@@ -1,0 +1,11 @@
+lib: [
+  "_build/install/default/lib/git_md/META"
+  "_build/install/default/lib/git_md/dune-package"
+  "_build/install/default/lib/git_md/opam"
+]
+bin: [
+  "_build/install/default/bin/git_md"
+]
+doc: [
+  "_build/install/default/doc/git_md/README.md"
+]
