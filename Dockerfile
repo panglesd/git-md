@@ -20,22 +20,14 @@ WORKDIR git_md/
 
 RUN opam install -y --deps-only --with-test --with-doc .
 
-RUN opam pin hockmd.dev git+https://github.com/panglesd/hockmd#9a7c921a0a922bba80c874c42fee46a52b70eedd
-
 COPY --chown=opam dune* .
 COPY --chown=opam src src
 
 RUN opam exec -- dune build @all
-# RUN opam exec -- sudo dune install --prefix=/usr/local
 
 USER root
 RUN chmod a+rwx /home/opam
 RUN chmod -R a+rwx /home/opam/git_md
-# RUN mkdir /home/git
-# RUN chmod a+rwx /home/git
-# RUN cp /home/opam/git_md/_build/default/src/bin/git_shell.exe /usr/bin
-
-RUN printf "opam:a" | sudo chpasswd
 
 RUN echo "PermitEmptyPasswords yes" >> /etc/ssh/sshd_config
 
@@ -52,12 +44,11 @@ RUN set -eux; \
 USER git
 WORKDIR /home/git
 
-RUN export HOME=/home/git ; git config --global user.email "you@example.com"
-RUN export HOME=/home/git ; git config --global user.name "Your Name"
+
+RUN su - git -c "git config --global user.email \"hackdmd@hackmd.hackmd\""
+RUN su - git -c "git config --global user.name \"Hack MD\""
 
 USER root
-
-RUN service ssh start
 
 RUN ssh-keygen -A
 

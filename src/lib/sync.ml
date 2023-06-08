@@ -49,7 +49,7 @@ let pull token dir api_url =
   let to_remove = Config.obsolete_files config notes in
   (* Update a file-system note from a note in hackmd *)
   let write id title file =
-    Logs.warn (fun m -> m "Pulling note %s (%s)..." title id);
+    Logs.warn (fun m -> m "Pulling note \"%s\" (%s)..." title id);
     (* Get the note *)
     let** note = Hmd.note ?api_url token id in
     Logs.debug (fun m -> m "Writing %a: %s" Fpath.pp file note.content);
@@ -122,7 +122,7 @@ let push token dir api_url =
   let** config = Lwt.return @@ Config.get_config dir in
   (* Update function *)
   let update id title path =
-    Logs.warn (fun m -> m "Sending note %s (%s)" title id);
+    Logs.warn (fun m -> m "Sending note \"%s\" (%s)" title id);
     match Bos.OS.File.read (Fpath.( // ) dir path) with
     | Error (`Msg s) ->
         Logs.debug (fun m -> m "Error when reading %a: %s" Fpath.pp path s);
@@ -130,7 +130,7 @@ let push token dir api_url =
     | Ok content -> (
         let* p =
           Hmd.update_note ?api_url token id
-            (Some { content; readPermission = Owner })
+            (Some { content; readPermission = None })
         in
         match p with
         | Error (`Msg s) ->
@@ -230,7 +230,7 @@ let push_files token dir files api_url =
     | Ok content ->
         let+* _p =
           Hmd.update_note ?api_url token id
-            (Some { content; readPermission = Owner })
+            (Some { content; readPermission = None })
         in
         Ok config
   in
