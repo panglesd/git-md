@@ -78,7 +78,12 @@ let pull token dir api_url =
                 let| timestamp = last_changed dir file in
                 (file, timestamp, config)
           in
-          if file_timestamp < note_summary.lastChangedAt then
+          let lastChangedAt =
+            match note_summary.lastChangedAt with
+            | None -> Int.max_int
+            | Some n -> n
+          in
+          if file_timestamp < lastChangedAt then
             Ok (config, (note_summary, file) :: notes_with_file)
           else Ok (config, notes_with_file))
         (Ok (config, []))
@@ -94,12 +99,20 @@ let pull token dir api_url =
            (fun ((note : Hmd.Types.note_summary), _) -> note.id)
            files_to_update));
   (* Do the update for aggregated notes+file *)
-  let+* () =
+  let** () =
     Lwt_list.fold_left_s
       (fun r ((note_summary : Hmd.Types.note_summary), file) ->
         let** () = Lwt.return r in
         write note_summary.id note_summary.title file)
       (Ok ()) files_to_update
+  in
+  let other_files_to_update = Config.other_files config in
+  let+* () =
+    Lwt_list.fold_left_s
+      (fun r (id, file) ->
+        let** () = Lwt.return r in
+        write id "Not owned note" file)
+      (Ok ()) other_files_to_update
   in
   (* Delete unnecessary files *)
   List.iter
@@ -155,7 +168,9 @@ let push token dir api_url =
                 notes
             with
             | None -> (0, "Untitled" (* has been deleted... *))
-            | Some n -> (n.lastChangedAt, n.title)
+            | Some n ->
+                let last = Option.value n.lastChangedAt ~default:0 in
+                (last, n.title)
           in
           let| file_timestamp = last_changed dir path in
           if server_timestamp < file_timestamp then (id, title, path) :: r

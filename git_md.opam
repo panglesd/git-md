@@ -34,5 +34,5 @@ build: [
 ]
 dev-repo: "git+https://github.com/username/reponame.git"
 pin-depends: [
-  [ "hockmd.dev" "git+https://github.com/panglesd/hockmd#54338128f6c549b9da478827d9aea2ffa321355a" ]
+  [ "hockmd.dev" "git+https://github.com/panglesd/hockmd#2f1be4507aa7e7c86a77e8653ea3b3aa64d3ad24" ]
 ]

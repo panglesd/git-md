@@ -1,3 +1,5 @@
 (library
  (name git_md)
- (libraries hockmd bos astring logs fmt))
+ (libraries hockmd bos astring logs fmt yojson)
+ (preprocess
+  (pps ppx_yojson_conv)))
