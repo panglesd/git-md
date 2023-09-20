@@ -18,6 +18,17 @@ $ chmod a+rw .git_md   # Could be more specific to the docker container
 $ docker run --rm -v ~/.git_md:/home/git -p 2222:22 panglesd/git_md
 ```
 
+3.5. Ssh into the docker container to set up some things ...
+
+```shell
+$ ssh git@localhost -p 2222
+$ git config --global user.email "you@example.com"
+$ git config --global user.name "Your Name"
+$ exit
+```
+
+`
+
 4. Clone your hackmd, for instance into the `hackmd` directory
 
 ```shell

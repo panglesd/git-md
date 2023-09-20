@@ -19,7 +19,7 @@
  (name git_md)
  (synopsis "A short synopsis")
  (description "A longer description")
- (depends ocaml dune hockmd logs cmdliner lwt_ssl)
+ (depends ocaml dune hockmd logs cmdliner lwt_ssl (ppx_yojson_conv (< v0.16)))
  (tags
   (topics "to describe" your project)))
 
