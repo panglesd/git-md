@@ -5,10 +5,11 @@ A tool to locally synchronize your hackmd notes. Experimental: use at your own r
 ## Quick-start
 
 1. Generate a Hackmd token, `<token>`
-2. Create a directory
+2. Create a directory (and make it readable by the docker container)
 
 ```shell
 $ mkdir .git_md
+$ chmod a+rw .git_md   # Could be more specific to the docker container
 ```
 
 3. Start the docker image,
@@ -20,7 +21,7 @@ $ docker run --rm -v ~/.git_md:/home/git -p 2222:22 panglesd/git_md
 4. Clone your hackmd, for instance into the `hackmd` directory
 
 ```shell
-$ git clone git@localhost:2222/home/git/<token> hackmd
+$ git clone ssh://git@localhost:2222/home/git/<token> hackmd
 ```
 
 Now, each `git pull` will pull your notes from hackmd (as a single commit) and each `push` will update the notes (if your local repo is up to date)

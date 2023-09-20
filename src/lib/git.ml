@@ -4,7 +4,7 @@ let git_add dir file =
   let open Result_syntax in
   let= current = Bos.OS.Dir.current () in
   let= () = Bos.OS.Dir.set_current dir in
-  let cmd = Bos.Cmd.(v "git" % "add" % p file) in
+  let cmd = Bos.Cmd.(v "git" % "add" % "--" % p file) in
   let= () = Bos.OS.Cmd.run_out cmd |> Bos.OS.Cmd.to_null in
   Bos.OS.Dir.set_current current
 
